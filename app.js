@@ -81,7 +81,7 @@ let me = ls.get('odp-me'), FEES = null, feesErr = '';
 const eur = n => (+n || 0).toLocaleString('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 });
 async function loadFees() { try { FEES = await api.rpc('get_fees', { pid: me?.id || null, secret: adminPw || me?.pin || '' }); feesErr = ''; } catch (e) { FEES = null; feesErr = e.message; if (!adminPw) { me = null; ls.del('odp-me'); } } render(); }
 const ui = { comp: null, onlyUs: true, metric: 'goals', statComp: '' };
-const isCoach = p => p.position === 'Entrenador';
+const isCoach = p => p.position === 'Entrenador' || p.position === 'Leyenda';
 const player = id => S.players.find(p => p.id === id);
 const comp = id => S.comps.find(c => c.id === id);
 const isUs = t => (t || '').trim().toUpperCase() === (CFG.team || '').toUpperCase();
@@ -242,7 +242,7 @@ V.partido = id => {
 V.plantilla = () => {
   const all = S.players.filter(p => p.active).sort(byName);
   const grid = l => `<div class="squad">${l.map(p => `<a href="#jugador.${p.id}">${avatar(p, 76)}<span>${esc(p.name)}${p.number != null ? ` <span class="muted num">${p.number}</span>` : ''}</span></a>`).join('')}</div>`;
-  const groups = [['Portero', 'Porteros'], ['Defensa', 'Defensas'], ['Centrocampista', 'Centrocampistas'], ['Delantero', 'Delanteros'], ['', 'Sin posición'], ['Entrenador', 'Cuerpo técnico']];
+  const groups = [['Portero', 'Porteros'], ['Defensa', 'Defensas'], ['Centrocampista', 'Centrocampistas'], ['Delantero', 'Delanteros'], ['', 'Sin posición'], ['Entrenador', 'Cuerpo técnico'], ['Leyenda', 'Leyendas']];
   const known = new Set(groups.map(g => g[0]));
   return `<h1>Plantilla</h1>${all.length ? groups.map(([k, title]) => { const l = all.filter(p => (known.has(p.position || '') ? p.position || '' : '') === k); return l.length ? `<h2>${title} <span class="muted num">${l.length}</span></h2>${grid(l)}` : ''; }).join('') : empty('Todavía no hay jugadores.')}`;
 };
@@ -283,7 +283,7 @@ V.cuotas = () => {
     h += `<div class="hero"><span class="eyebrow">${esc(player(me.id).name)}</span><h2>${owe > 0 ? 'Te quedan ' + eur(owe) + ' por pagar' : fees.length ? 'Estás al día' : 'No hay cuotas'}</h2></div>`; }
   if (!fees.length) h += empty(adminPw ? 'Todavía no hay cuotas. Crea la primera con "Añadir cuota".' : 'Todavía no hay cuotas.');
   for (const f of fees) {
-    const ps = S.players.filter(p => p.active || paid(f, p.id)).sort(byName), tot = ps.reduce((s, p) => s + Math.min(paid(f, p.id), f.amount), 0), done = ps.filter(p => paid(f, p.id) >= f.amount).length;
+    const ps = S.players.filter(p => (p.active && p.position !== 'Leyenda') || paid(f, p.id)).sort(byName), tot = ps.reduce((s, p) => s + Math.min(paid(f, p.id), f.amount), 0), done = ps.filter(p => paid(f, p.id) >= f.amount).length;
     h += `<div class="card"><div class="row between"><div class="grow"><h2>${esc(f.name)}</h2><div class="muted small">${eur(f.amount)} por jugador${f.due ? ' · hasta el ' + esc(fmtDate(f.due)) : ''}</div></div>
       ${adminPw ? `<button class="btn sm ghost" data-act="editfee" data-id="${f.id}">Editar</button>` : ''}</div>
       <div><b>${done} de ${ps.length}</b> han pagado · ${eur(tot)} de ${eur(f.amount * ps.length)}<div class="bar"><i style="width:${ps.length && f.amount ? tot / (f.amount * ps.length) * 100 : 0}%"></i></div></div>
@@ -310,7 +310,7 @@ V.admin = () => {
 };
 
 /* ---------- Acciones ---------- */
-const POS = [['', 'Sin posición'], ['Portero', 'Portero'], ['Defensa', 'Defensa'], ['Centrocampista', 'Centrocampista'], ['Delantero', 'Delantero'], ['Entrenador', 'Entrenador (cuerpo técnico)']];
+const POS = [['', 'Sin posición'], ['Portero', 'Portero'], ['Defensa', 'Defensa'], ['Centrocampista', 'Centrocampista'], ['Delantero', 'Delantero'], ['Entrenador', 'Entrenador (cuerpo técnico)'], ['Leyenda', 'Leyenda (solo vota)']];
 const A = {
   close: () => dlg.close(),
   setcomp: d => { ui.comp = d.id; render(); },
