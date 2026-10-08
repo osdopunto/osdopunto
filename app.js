@@ -167,7 +167,7 @@ V.inicio = () => {
   } else h += `<div class="hero"><span class="eyebrow">Próximo partido</span><h2>Sin partidos programados</h2><span class="heromet">Añade el calendario desde Administración (icono de arriba a la derecha).</span></div>`;
   if (adminPw) for (const m of mine.filter(m => !played(m) && m.date && m.date.slice(0, 10) <= today)) h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Falta el resultado</span><h3>${esc(m.home)} - ${esc(m.away)}</h3></div><button class="btn" data-act="editmatch" data-id="${m.id}">Poner resultado</button></div></div>`;
   if (next) { const n = S.att.filter(x => x.match_id === next.id && x.status === 'si').length, mine2 = me && attOf(next.id, me.id);
-    h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Convocatoria</span><div><b>${n}</b> ${n === 1 ? 'confirmado' : 'confirmados'}${mine2 ? ` · Tú: ${ATT[mine2]}` : ''}</div></div><a class="btn ${mine2 ? 'ghost' : ''}" href="#partido.${next.id}">${mine2 ? 'Ver' : '¿Vas al partido?'}</a></div></div>`; }
+    h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Convocatoria</span><div><b>${n}</b> ${n === 1 ? 'confirmado' : 'confirmados'}${mine2 ? ` · Tú: ${ATT[mine2]}` : ''}</div></div><a class="btn ${mine2 ? 'ghost' : ''}" href="#partido.${next.id}">${mine2 ? 'Cambiar' : '¿Vas al partido?'}</a></div>${byPos(S.players.filter(p => attOf(next.id, p.id) === 'si' && !isCoach(p)))}</div>`; }
   for (const m of voting) h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Votación abierta</span><h3>${esc(m.home)} ${m.home_goals ?? ''} - ${m.away_goals ?? ''} ${esc(m.away)}</h3></div><button class="btn neon" data-act="vote" data-id="${m.id}">Puntuar y votar MVP</button></div></div>`;
   if (last) {
     const w = player(mvpOf(last.id)), r = resultOf(last);
@@ -186,6 +186,9 @@ V.inicio = () => {
   if (top.length) h += `<div class="card"><div class="row between"><h2>Goleadores</h2><a class="small muted" href="#estadisticas">Ver todo</a></div><div class="list rank">${top.map((t, i) => rankRow(t, i, t.goals, top[0].goals)).join('')}</div></div>`;
   return h;
 };
+const POSG = [['Portero', 'Porteros'], ['Defensa', 'Defensas'], ['Centrocampista', 'Centrocampistas'], ['Delantero', 'Delanteros'], ['', 'Sin posición']];
+const byPos = ps => POSG.map(([k, title]) => { const l = ps.filter(p => (POSG.some(g => g[0] === p.position) ? p.position : '') === k).sort(byName);
+  return l.length ? `<div><div class="eyebrow">${title} · ${l.length}</div><div class="row" style="margin-top:6px;gap:8px 12px">${l.map(p => `<a class="row" style="gap:6px" href="#jugador.${p.id}">${avatar(p, 28)}<b class="small">${esc(p.name)}</b></a>`).join('')}</div></div>` : ''; }).join('');
 const rankRow = (t, i, val, max) => `<a href="#jugador.${t.p.id}"><span class="pos">${i + 1}</span>${avatar(t.p, 40)}<span class="grow"><b>${esc(t.p.name)}</b><div class="bar"><i style="width:${max ? Math.max(4, (parseFloat(val) || 0) / max * 100) : 0}%"></i></div></span><span class="val num">${val}</span></a>`;
 const compChips = (cur, act, all, noFr) => `<div class="chips">${all ? `<button class="chip${!cur ? ' on' : ''}" data-act="${act}" data-id="">Todas</button>` : ''}${comps().filter(c => !(noFr && c.friendly)).map(c => `<button class="chip${c.id === cur ? ' on' : ''}" data-act="${act}" data-id="${c.id}">${esc(c.name)}</button>`).join('')}</div>`;
 const curComp = () => comp(ui.comp) || comps()[0];
@@ -228,7 +231,7 @@ V.partido = id => {
     h += `<div class="card"><div class="row between"><h2>Convocatoria</h2>${adminPw ? `<button class="btn sm ghost" data-act="editatt" data-id="${id}">Editar</button>` : ''}</div>
       <div class="row">${Object.entries(ATT).map(([k, l]) => `<button class="chip${my === k ? ' on' : ''}" data-act="attend" data-id="${id}" data-st="${k}">${l}</button>`).join('')}</div>
       ${me && player(me.id) ? `<span class="small muted">Respondes como ${esc(player(me.id).name)}.</span>` : ''}
-      ${line('si', 'Van')}${line('duda', 'En duda')}${line('no', 'No pueden')}${line('', 'Sin responder')}</div>`;
+      ${by('si').length ? `<div><b>Van (${by('si').length})</b></div>${byPos(by('si'))}` : ''}${line('duda', 'En duda')}${line('no', 'No pueden')}${line('', 'Sin responder')}</div>`;
   }
   if (st.length) h += `<div class="card scroll"><table><thead><tr><th class="l">Jugador</th><th>Goles</th><th>Asist.</th><th>Tarj.</th><th>Nota</th><th>MVP</th></tr></thead><tbody>
     ${st.map(({ s, p, r }) => `<tr><td class="l"><a href="#jugador.${p.id}">${esc(p.name)}</a></td><td>${s.goals || '·'}</td><td>${s.assists || '·'}</td><td>${'<i class="cardy"></i> '.repeat(s.yellow)}${'<i class="cardr"></i> '.repeat(s.red)}${s.yellow + s.red ? '' : '·'}</td><td>${r?.avg_score != null ? (+r.avg_score).toFixed(1) : '·'}</td><td>${r?.mvp_votes || '·'}</td></tr>`).join('')}</tbody></table></div>`;
@@ -237,9 +240,11 @@ V.partido = id => {
 };
 
 V.plantilla = () => {
-  const all = S.players.filter(p => p.active).sort(byName), ps = all.filter(p => !isCoach(p)), cs = all.filter(isCoach);
+  const all = S.players.filter(p => p.active).sort(byName);
   const grid = l => `<div class="squad">${l.map(p => `<a href="#jugador.${p.id}">${avatar(p, 76)}<span>${esc(p.name)}${p.number != null ? ` <span class="muted num">${p.number}</span>` : ''}</span></a>`).join('')}</div>`;
-  return `<h1>Plantilla</h1>${ps.length ? grid(ps) : empty('Todavía no hay jugadores.')}${cs.length ? `<h2>Cuerpo técnico</h2>${grid(cs)}` : ''}`;
+  const groups = [['Portero', 'Porteros'], ['Defensa', 'Defensas'], ['Centrocampista', 'Centrocampistas'], ['Delantero', 'Delanteros'], ['', 'Sin posición'], ['Entrenador', 'Cuerpo técnico']];
+  const known = new Set(groups.map(g => g[0]));
+  return `<h1>Plantilla</h1>${all.length ? groups.map(([k, title]) => { const l = all.filter(p => (known.has(p.position || '') ? p.position || '' : '') === k); return l.length ? `<h2>${title} <span class="muted num">${l.length}</span></h2>${grid(l)}` : ''; }).join('') : empty('Todavía no hay jugadores.')}`;
 };
 
 V.jugador = id => {
