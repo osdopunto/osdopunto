@@ -81,6 +81,7 @@ let me = ls.get('odp-me'), FEES = null, feesErr = '';
 const eur = n => (+n || 0).toLocaleString('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 });
 async function loadFees() { try { FEES = await api.rpc('get_fees', { pid: me?.id || null, secret: adminPw || me?.pin || '' }); feesErr = ''; } catch (e) { FEES = null; feesErr = e.message; if (!adminPw) { me = null; ls.del('odp-me'); } } render(); }
 const ui = { comp: null, onlyUs: true, metric: 'goals', statComp: '' };
+const isCoach = p => p.position === 'Entrenador';
 const player = id => S.players.find(p => p.id === id);
 const comp = id => S.comps.find(c => c.id === id);
 const isUs = t => (t || '').trim().toUpperCase() === (CFG.team || '').toUpperCase();
@@ -118,7 +119,7 @@ function totals(compId) {
   for (const s of S.stats) if (mids.has(s.match_id) && T[s.player_id]) { const t = T[s.player_id]; t.pj++; for (const k of ['goals', 'assists', 'yellow', 'red', 'own_goals']) t[k] += s[k] || 0; }
   for (const mid of mids) { const w = mvpOf(mid); if (w && T[w]) T[w].mvp++; }
   for (const r of S.results) if (mids.has(r.match_id) && r.avg_score != null && T[r.player_id]) { T[r.player_id].sum += +r.avg_score; T[r.player_id].n++; }
-  return Object.values(T).map(t => ({ ...t, avg: t.n ? t.sum / t.n : null })).filter(t => t.p.active || t.pj);
+  return Object.values(T).map(t => ({ ...t, avg: t.n ? t.sum / t.n : null })).filter(t => (t.p.active && !isCoach(t.p)) || t.pj);
 }
 const resultOf = m => { if (!played(m)) return ''; const d = (m.home_goals - m.away_goals) * (isUs(m.home) ? 1 : -1); return d > 0 ? 'W' : d < 0 ? 'L' : 'D'; };
 const RES = { W: 'Victoria', D: 'Empate', L: 'Derrota' };
@@ -222,7 +223,7 @@ V.partido = id => {
   if (m.voting_open) h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Votación abierta</span><div>${voters.length ? `Han votado ${voters.length}: ${voters.map(v => esc(player(v.voter_id)?.name || '')).join(', ')}` : 'Todavía no ha votado nadie.'}</div></div><button class="btn neon" data-act="vote" data-id="${id}">Puntuar y votar MVP</button></div><p class="small muted" style="margin:0">Las notas y el MVP se publican cuando se cierre la votación.</p></div>`;
   else if (w) h += `<a class="card" href="#jugador.${w}"><div class="row">${avatar(player(w), 56)}<div><span class="pill neon">MVP del partido</span><h2 style="margin-top:4px">${esc(player(w).name)}</h2></div></div></a>`;
   if (ours(m) && !st.length) {
-    const ps = S.players.filter(p => p.active).sort(byName), by = k => ps.filter(p => (attOf(id, p.id) || '') === k), my = me && attOf(id, me.id);
+    const ps = S.players.filter(p => p.active && !isCoach(p)).sort(byName), by = k => ps.filter(p => (attOf(id, p.id) || '') === k), my = me && attOf(id, me.id);
     const line = (k, label) => by(k).length ? `<div><b>${label} (${by(k).length}):</b> ${by(k).map(p => esc(p.name)).join(', ')}</div>` : '';
     h += `<div class="card"><div class="row between"><h2>Convocatoria</h2>${adminPw ? `<button class="btn sm ghost" data-act="editatt" data-id="${id}">Editar</button>` : ''}</div>
       <div class="row">${Object.entries(ATT).map(([k, l]) => `<button class="chip${my === k ? ' on' : ''}" data-act="attend" data-id="${id}" data-st="${k}">${l}</button>`).join('')}</div>
@@ -236,8 +237,9 @@ V.partido = id => {
 };
 
 V.plantilla = () => {
-  const ps = S.players.filter(p => p.active).sort(byName);
-  return `<h1>Plantilla</h1>${ps.length ? `<div class="squad">${ps.map(p => `<a href="#jugador.${p.id}">${avatar(p, 76)}<span>${esc(p.name)}${p.number != null ? ` <span class="muted num">${p.number}</span>` : ''}</span></a>`).join('')}</div>` : empty('Todavía no hay jugadores.')}`;
+  const all = S.players.filter(p => p.active).sort(byName), ps = all.filter(p => !isCoach(p)), cs = all.filter(isCoach);
+  const grid = l => `<div class="squad">${l.map(p => `<a href="#jugador.${p.id}">${avatar(p, 76)}<span>${esc(p.name)}${p.number != null ? ` <span class="muted num">${p.number}</span>` : ''}</span></a>`).join('')}</div>`;
+  return `<h1>Plantilla</h1>${ps.length ? grid(ps) : empty('Todavía no hay jugadores.')}${cs.length ? `<h2>Cuerpo técnico</h2>${grid(cs)}` : ''}`;
 };
 
 V.jugador = id => {
@@ -247,10 +249,10 @@ V.jugador = id => {
   return `<a class="small muted" href="#plantilla">‹ Plantilla</a><div class="row">${avatar(p, 104)}<div class="grow"><h1>${esc(p.name)}</h1>
     <div class="muted">${[p.number != null ? 'Dorsal ' + p.number : '', p.position].filter(Boolean).map(esc).join(' · ') || 'Jugador'}</div>
     <button class="btn sm ghost" style="margin-top:8px" data-act="photo" data-id="${id}">${PH[id] ? 'Cambiar foto' : 'Poner foto'}</button></div></div>
-    <div class="tiles">${[['Partidos', t.pj], ['Goles', t.goals], ['Asist.', t.assists], ['MVP', t.mvp], ['Nota', t.avg != null ? t.avg.toFixed(1) : '–'], ['Amarillas', t.yellow], ['Rojas', t.red]].map(([l, v]) => `<div class="tile"><b class="num">${v}</b><span>${l}</span></div>`).join('')}</div>
+    ${isCoach(p) && !t.pj ? '' : `<div class="tiles">${[['Partidos', t.pj], ['Goles', t.goals], ['Asist.', t.assists], ['MVP', t.mvp], ['Nota', t.avg != null ? t.avg.toFixed(1) : '–'], ['Amarillas', t.yellow], ['Rojas', t.red]].map(([l, v]) => `<div class="tile"><b class="num">${v}</b><span>${l}</span></div>`).join('')}</div>
     <div class="card"><h2>Partidos jugados</h2>${log.length ? `<div class="list">${log.map(({ s, m }) => { const r = S.results.find(r => r.match_id === m.id && r.player_id === id);
       return `<a href="#partido.${m.id}"><span class="grow"><b>${esc(isUs(m.home) ? m.away : m.home)}</b> <span class="muted num">${played(m) ? `${m.home_goals}-${m.away_goals}` : ''}</span><div class="small muted">${esc(fmtDate(m.date))}</div></span>
-      <span class="small num">${[s.goals ? s.goals + ' gol' + (s.goals > 1 ? 'es' : '') : '', s.assists ? s.assists + ' asist.' : ''].filter(Boolean).join(' · ')}</span>${mvpOf(m.id) === id ? '<span class="pill neon">MVP</span>' : ''}${r?.avg_score != null ? `<span class="pill num">${(+r.avg_score).toFixed(1)}</span>` : ''}</a>`; }).join('')}</div>` : '<p class="muted" style="margin:0">Todavía no ha jugado ningún partido.</p>'}</div>`;
+      <span class="small num">${[s.goals ? s.goals + ' gol' + (s.goals > 1 ? 'es' : '') : '', s.assists ? s.assists + ' asist.' : ''].filter(Boolean).join(' · ')}</span>${mvpOf(m.id) === id ? '<span class="pill neon">MVP</span>' : ''}${r?.avg_score != null ? `<span class="pill num">${(+r.avg_score).toFixed(1)}</span>` : ''}</a>`; }).join('')}</div>` : '<p class="muted" style="margin:0">Todavía no ha jugado ningún partido.</p>'}</div>`}`;
 };
 
 const METRICS = { goals: ['Goleadores', t => t.goals], assists: ['Asistentes', t => t.assists], most: ['Más partidos', t => t.pj], least: ['Menos partidos', t => t.pj], mvp: ['MVP', t => t.mvp], avg: ['Nota media', t => t.avg], cards: ['Tarjetas', t => t.yellow + t.red * 2] };
@@ -303,7 +305,7 @@ V.admin = () => {
 };
 
 /* ---------- Acciones ---------- */
-const POS = [['', 'Sin posición'], ['Portero', 'Portero'], ['Defensa', 'Defensa'], ['Centrocampista', 'Centrocampista'], ['Delantero', 'Delantero']];
+const POS = [['', 'Sin posición'], ['Portero', 'Portero'], ['Defensa', 'Defensa'], ['Centrocampista', 'Centrocampista'], ['Delantero', 'Delantero'], ['Entrenador', 'Entrenador (cuerpo técnico)']];
 const A = {
   close: () => dlg.close(),
   setcomp: d => { ui.comp = d.id; render(); },
@@ -383,7 +385,7 @@ const A = {
   },
   editstats: d => {
     const cur = Object.fromEntries(S.stats.filter(s => s.match_id === d.id).map(s => [s.player_id, s]));
-    const hasStats = Object.keys(cur).length > 0, ps = S.players.filter(p => p.active || cur[p.id]).sort(byName), n = (k, p) => `<input type="number" min="0" max="20" inputmode="numeric" id="${k}_${p.id}" name="${k}_${p.id}" value="${cur[p.id]?.[{ g: 'goals', a: 'assists', y: 'yellow', r: 'red', o: 'own_goals' }[k]] || ''}" aria-label="${k}">`;
+    const hasStats = Object.keys(cur).length > 0, ps = S.players.filter(p => (p.active && !isCoach(p)) || cur[p.id]).sort(byName), n = (k, p) => `<input type="number" min="0" max="20" inputmode="numeric" id="${k}_${p.id}" name="${k}_${p.id}" value="${cur[p.id]?.[{ g: 'goals', a: 'assists', y: 'yellow', r: 'red', o: 'own_goals' }[k]] || ''}" aria-label="${k}">`;
     formDlg('Estadísticas del partido', `<p class="small muted" style="margin:0">Marca quién jugó. G goles · A asistencias · TA/TR tarjetas · PP propia puerta</p>
       <div class="sg"><span></span><span></span>${['G', 'A', 'TA', 'TR', 'PP'].map(x => `<span class="h">${x}</span>`).join('')}
       ${ps.map(p => `<label for="pl_${p.id}">${esc(p.name)}</label><input type="checkbox" id="pl_${p.id}" name="pl_${p.id}" ${cur[p.id] || (!hasStats && attOf(d.id, p.id) === 'si') ? 'checked' : ''}>${['g', 'a', 'y', 'r', 'o'].map(k => n(k, p)).join('')}`).join('')}</div>`, async f => {
@@ -416,7 +418,7 @@ const A = {
     await refresh();
   },
   editatt: d => {
-    const ps = S.players.filter(p => p.active).sort(byName);
+    const ps = S.players.filter(p => p.active && !isCoach(p)).sort(byName);
     formDlg('Convocatoria', ps.map(p => `<div class="row between"><label for="f_at_${p.id}">${esc(p.name)}</label><select id="f_at_${p.id}" name="at_${p.id}" style="width:auto">${[['', 'Sin responder'], ...Object.entries(ATT)].map(([v, t]) => `<option value="${v}"${(attOf(d.id, p.id) || '') === v ? ' selected' : ''}>${t}</option>`).join('')}</select></div>`).join(''), async f => {
       for (const p of ps) if ((attOf(d.id, p.id) || '') !== f['at_' + p.id]) await api.rpc('set_attendance', { pid: p.id, secret: adminPw, mid: d.id, st: f['at_' + p.id] || null });
       await refresh();
