@@ -197,5 +197,5 @@ grant execute on function admin_check(text), admin_upsert(text, text, jsonb), ad
   pin_login(uuid, text), set_photo(uuid, text, text), cast_vote(uuid, text, uuid, uuid, jsonb) to anon, authenticated;
 
 -- Contraseña de administrador inicial (cámbiala aquí antes de ejecutar)
-insert into app_secrets values ('admin', extensions.crypt('CAMBIA-ESTA-CLAVE', extensions.gen_salt('bf')))
+insert into app_secrets values ('admin', extensions.crypt('Mosteiro_96.', extensions.gen_salt('bf')))
   on conflict (key) do nothing;
