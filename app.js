@@ -401,11 +401,14 @@ const A = {
   },
   photo: d => {
     const p = player(d.id), needPin = !adminPw && !(me && me.id === p.id);
-    formDlg('Foto de ' + p.name, `<label class="f">Elige una foto<input type="file" id="f_file" name="file" accept="image/*" required></label>
+    formDlg('Foto de ' + p.name, `<label class="f">Hacer una foto con la cámara<input type="file" id="f_cam" name="cam" accept="image/*" capture="user"></label>
+      <label class="f">O elegir una de la galería<input type="file" id="f_file" name="file" accept="image/*"></label>
       ${needPin ? fld('PIN de ' + p.name, 'pin', '', 'type="password" inputmode="numeric" required minlength="4" autocomplete="off"') + '<p class="small muted" style="margin:0">Solo cada jugador puede cambiar su foto. Si es tu primera vez, el PIN que escribas quedará como tuyo.</p>' : ''}`, async (f, form) => {
+      const file = $('#f_cam', form).files[0] || $('#f_file', form).files[0];
+      if (!file) throw new Error('Haz una foto o elige una de la galería');
       let secret = adminPw || me?.pin;
       if (needPin) { if (!await api.rpc('pin_login', { pid: p.id, pin: f.pin })) throw new Error('PIN incorrecto'); me = { id: p.id, pin: f.pin }; ls.set('odp-me', me); secret = f.pin; }
-      const data = await fileToPhoto($('#f_file', form).files[0]);
+      const data = await fileToPhoto(file);
       await api.rpc('set_photo', { pid: p.id, secret, data }); await refresh(true); toast('Foto guardada');
     });
   },
