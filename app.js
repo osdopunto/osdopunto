@@ -50,19 +50,20 @@ function localBackend() {
     admin_set_payment({ pw, fid, pid, amount }) { adm(pw); d.fee_payments = d.fee_payments.filter(x => !(x.fee_id === fid && x.player_id === pid)); if (amount > 0) d.fee_payments.push({ fee_id: fid, player_id: pid, paid: amount }); },
     pin_login({ pid, pin }) { if (pin.length < 4) throw new Error('El PIN debe tener al menos 4 cifras'); if (!d.pins[pid]) { d.pins[pid] = pin; return true; } return d.pins[pid] === pin; },
     set_photo({ pid, secret, data }) { if (secret !== d.admin && d.pins[pid] !== secret) throw new Error('PIN incorrecto'); if (data) d.photos[pid] = data; else delete d.photos[pid]; },
+    admin_reset_vote({ pw, mid, pid }) { adm(pw); d.ratings = d.ratings.filter(r => !(r.match_id === mid && r.voter_id === pid)); d.mvp = d.mvp.filter(r => !(r.match_id === mid && r.voter_id === pid)); },
+    coach_set_attendance({ coach, pin, mid, pid, st }) { if (d.pins[coach] !== pin || d.players.find(p => p.id === coach)?.position !== 'Entrenador') throw new Error('Solo los entrenadores pueden editar la convocatoria'); d.attendance = d.attendance.filter(x => !(x.match_id === mid && x.player_id === pid)); if (st) d.attendance.push({ match_id: mid, player_id: pid, status: st }); },
     cast_vote({ pid, pin, mid, mvp, scores }) {
       if (d.pins[pid] !== pin) throw new Error('PIN incorrecto');
       if (!d.matches.find(m => m.id === mid && m.voting_open)) throw new Error('La votación está cerrada');
       if (mvp === pid) throw new Error('No puedes votarte a ti mismo');
-      d.ratings = d.ratings.filter(r => !(r.match_id === mid && r.voter_id === pid));
+      if (d.mvp.some(r => r.match_id === mid && r.voter_id === pid)) throw new Error('Ya has votado en este partido');
       for (const [k, v] of Object.entries(scores)) if (k !== pid) d.ratings.push({ match_id: mid, voter_id: pid, player_id: k, score: +v });
       d.mvp = d.mvp.filter(r => !(r.match_id === mid && r.voter_id === pid)); d.mvp.push({ match_id: mid, voter_id: pid, player_id: mvp });
     }
   };
   return {
     async load() {
-      const closed = new Set(d.matches.filter(m => !m.voting_open).map(m => m.id));
-      const results = d.player_stats.filter(s => closed.has(s.match_id)).map(s => {
+      const results = d.player_stats.map(s => {
         const rs = d.ratings.filter(r => r.match_id === s.match_id && r.player_id === s.player_id);
         return { match_id: s.match_id, player_id: s.player_id, avg_score: rs.length ? rs.reduce((a, r) => a + r.score, 0) / rs.length : null, mvp_votes: d.mvp.filter(v => v.match_id === s.match_id && v.player_id === s.player_id).length };
       });
@@ -81,7 +82,9 @@ let me = ls.get('odp-me'), FEES = null, feesErr = '';
 const eur = n => (+n || 0).toLocaleString('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 });
 async function loadFees() { try { FEES = await api.rpc('get_fees', { pid: me?.id || null, secret: adminPw || me?.pin || '' }); feesErr = ''; } catch (e) { FEES = null; feesErr = e.message; if (!adminPw) { me = null; ls.del('odp-me'); } } render(); }
 const ui = { comp: null, onlyUs: true, metric: 'goals', statComp: '' };
-const isCoach = p => p.position === 'Entrenador' || p.position === 'Leyenda';
+const isCoach = p => ['Entrenador', 'Leyenda', 'Aficionado'].includes(p.position); // no juegan: fuera de convocatoria, estadísticas y rankings
+const isTrainer = p => p?.position === 'Entrenador';
+const NOFEE = ['Leyenda', 'Aficionado'];
 const player = id => S.players.find(p => p.id === id);
 const comp = id => S.comps.find(c => c.id === id);
 const isUs = t => (t || '').trim().toUpperCase() === (CFG.team || '').toUpperCase();
@@ -109,7 +112,9 @@ function standings(c) {
   }
   return Object.values(T).sort((a, b) => b.pts - a.pts || (b.gf - b.gc) - (a.gf - a.gc) || b.gf - a.gf || a.team.localeCompare(b.team));
 }
+const isOpen = mid => !!S.matches.find(m => m.id === mid)?.voting_open;
 function mvpOf(mid) {
+  if (isOpen(mid)) return undefined;
   const rs = S.results.filter(r => r.match_id === mid && r.mvp_votes > 0).sort((a, b) => b.mvp_votes - a.mvp_votes || (b.avg_score || 0) - (a.avg_score || 0));
   return rs[0]?.player_id;
 }
@@ -118,7 +123,7 @@ function totals(compId) {
   for (const p of S.players) T[p.id] = { p, pj: 0, goals: 0, assists: 0, yellow: 0, red: 0, own_goals: 0, mvp: 0, sum: 0, n: 0 };
   for (const s of S.stats) if (mids.has(s.match_id) && T[s.player_id]) { const t = T[s.player_id]; t.pj++; for (const k of ['goals', 'assists', 'yellow', 'red', 'own_goals']) t[k] += s[k] || 0; }
   for (const mid of mids) { const w = mvpOf(mid); if (w && T[w]) T[w].mvp++; }
-  for (const r of S.results) if (mids.has(r.match_id) && r.avg_score != null && T[r.player_id]) { T[r.player_id].sum += +r.avg_score; T[r.player_id].n++; }
+  for (const r of S.results) if (mids.has(r.match_id) && !isOpen(r.match_id) && r.avg_score != null && T[r.player_id]) { T[r.player_id].sum += +r.avg_score; T[r.player_id].n++; }
   return Object.values(T).map(t => ({ ...t, avg: t.n ? t.sum / t.n : null })).filter(t => (t.p.active && !isCoach(t.p)) || t.pj);
 }
 const resultOf = m => { if (!played(m)) return ''; const d = (m.home_goals - m.away_goals) * (isUs(m.home) ? 1 : -1); return d > 0 ? 'W' : d < 0 ? 'L' : 'D'; };
@@ -168,7 +173,7 @@ V.inicio = () => {
   if (adminPw) for (const m of mine.filter(m => !played(m) && m.date && m.date.slice(0, 10) <= today)) h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Falta el resultado</span><h3>${esc(m.home)} - ${esc(m.away)}</h3></div><button class="btn" data-act="editmatch" data-id="${m.id}">Poner resultado</button></div></div>`;
   if (next) { const n = S.att.filter(x => x.match_id === next.id && x.status === 'si').length, mine2 = me && attOf(next.id, me.id);
     h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Convocatoria</span><div><b>${n}</b> ${n === 1 ? 'confirmado' : 'confirmados'}${mine2 ? ` · Tú: ${ATT[mine2]}` : ''}</div></div><a class="btn ${mine2 ? 'ghost' : ''}" href="#partido.${next.id}">${mine2 ? 'Cambiar' : '¿Vas al partido?'}</a></div>${byPos(S.players.filter(p => attOf(next.id, p.id) === 'si' && !isCoach(p)))}</div>`; }
-  for (const m of voting) h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Votación abierta</span><h3>${esc(m.home)} ${m.home_goals ?? ''} - ${m.away_goals ?? ''} ${esc(m.away)}</h3></div><button class="btn neon" data-act="vote" data-id="${m.id}">Puntuar y votar MVP</button></div></div>`;
+  for (const m of voting) h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Votación abierta</span><h3>${esc(m.home)} ${m.home_goals ?? ''} - ${m.away_goals ?? ''} ${esc(m.away)}</h3><div class="small muted">${S.voters.filter(v => v.match_id === m.id).length} votos hasta ahora</div></div>${me && S.voters.some(v => v.match_id === m.id && v.voter_id === me.id) ? `<a class="btn ghost" href="#partido.${m.id}">Ver en directo</a>` : `<button class="btn neon" data-act="vote" data-id="${m.id}">Puntuar y votar MVP</button>`}</div></div>`;
   if (last) {
     const w = player(mvpOf(last.id)), r = resultOf(last);
     h += `<a class="card" href="#partido.${last.id}"><div class="row between"><span class="eyebrow">Último resultado · ${meta(last)}</span><span class="pill ${r}">${RES[r]}</span></div>
@@ -223,18 +228,28 @@ V.partido = id => {
   if (adminPw) h += `<div class="row"><button class="btn sm" data-act="editmatch" data-id="${id}">${played(m) ? 'Editar partido y resultado' : 'Poner resultado'}</button>
     ${ours(m) ? `<button class="btn sm" data-act="editstats" data-id="${id}">Estadísticas de jugadores</button><button class="btn sm ${m.voting_open ? 'ghost' : 'neon'}" data-act="togglevote" data-id="${id}">${m.voting_open ? 'Cerrar votación' : 'Abrir votación'}</button>` : ''}
     <button class="btn sm danger" data-act="delmatch" data-id="${id}">Eliminar</button></div>`;
-  if (m.voting_open) h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Votación abierta</span><div>${voters.length ? `Han votado ${voters.length}: ${voters.map(v => esc(player(v.voter_id)?.name || '')).join(', ')}` : 'Todavía no ha votado nadie.'}</div></div><button class="btn neon" data-act="vote" data-id="${id}">Puntuar y votar MVP</button></div><p class="small muted" style="margin:0">Las notas y el MVP se publican cuando se cierre la votación.</p></div>`;
+  if (m.voting_open) {
+    const iVoted = me && voters.some(v => v.voter_id === me.id), live = S.results.filter(x => x.match_id === id && player(x.player_id));
+    const mvpL = live.filter(x => x.mvp_votes > 0).sort((a, b) => b.mvp_votes - a.mvp_votes || (b.avg_score || 0) - (a.avg_score || 0));
+    const missing = S.players.filter(p => p.active && !voters.some(v => v.voter_id === p.id)).sort(byName);
+    h += `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Votación abierta · en directo</span><h2>${voters.length} ${voters.length === 1 ? 'voto' : 'votos'}</h2></div>
+      ${iVoted ? '<span class="pill W">Ya has votado</span>' : `<button class="btn neon" data-act="vote" data-id="${id}">Puntuar y votar MVP</button>`}</div>
+      ${mvpL.length ? `<div><div class="eyebrow">Votos al MVP</div><div class="list rank">${mvpL.map((x, i) => rankRow({ p: player(x.player_id) }, i, x.mvp_votes, mvpL[0].mvp_votes)).join('')}</div></div>` : '<p class="muted" style="margin:0">Todavía no hay votos.</p>'}
+      ${voters.length ? `<p class="small muted" style="margin:0">Han votado: ${voters.map(v => esc(player(v.voter_id)?.name || '')).join(', ')}</p>` : ''}</div>`;
+    if (adminPw) h += `<div class="card"><h3>Faltan por votar (${missing.length})</h3><p class="small" style="margin:0">${missing.map(p => esc(p.name)).join(', ') || 'Han votado todos.'}</p>
+      ${voters.length ? `<h3>Anular un voto</h3><p class="small muted" style="margin:0">Borra su voto para que pueda volver a votar.</p><div class="list">${voters.map(v => `<div><span class="grow"><b>${esc(player(v.voter_id)?.name || '')}</b></span><button class="btn sm danger" data-act="resetvote" data-id="${id}" data-pid="${v.voter_id}">Anular</button></div>`).join('')}</div>` : ''}</div>`;
+  }
   else if (w) h += `<a class="card" href="#jugador.${w}"><div class="row">${avatar(player(w), 56)}<div><span class="pill neon">MVP del partido</span><h2 style="margin-top:4px">${esc(player(w).name)}</h2></div></div></a>`;
   if (ours(m) && !st.length) {
     const ps = S.players.filter(p => p.active && !isCoach(p)).sort(byName), by = k => ps.filter(p => (attOf(id, p.id) || '') === k), my = me && attOf(id, me.id);
     const line = (k, label) => by(k).length ? `<div><b>${label} (${by(k).length}):</b> ${by(k).map(p => esc(p.name)).join(', ')}</div>` : '';
-    h += `<div class="card"><div class="row between"><h2>Convocatoria</h2>${adminPw ? `<button class="btn sm ghost" data-act="editatt" data-id="${id}">Editar</button>` : ''}</div>
+    h += `<div class="card"><div class="row between"><h2>Convocatoria</h2>${adminPw || isTrainer(me && player(me.id)) ? `<button class="btn sm ghost" data-act="editatt" data-id="${id}">Editar</button>` : ''}</div>
       <div class="row">${Object.entries(ATT).map(([k, l]) => `<button class="chip${my === k ? ' on' : ''}" data-act="attend" data-id="${id}" data-st="${k}">${l}</button>`).join('')}</div>
       ${me && player(me.id) ? `<span class="small muted">Respondes como ${esc(player(me.id).name)}.</span>` : ''}
       ${by('si').length ? `<div><b>Van (${by('si').length})</b></div>${byPos(by('si'))}` : ''}${line('duda', 'En duda')}${line('no', 'No pueden')}${line('', 'Sin responder')}</div>`;
   }
-  if (st.length) h += `<div class="card scroll"><table><thead><tr><th class="l">Jugador</th><th>Goles</th><th>Asist.</th><th>Tarj.</th><th>Nota</th><th>MVP</th></tr></thead><tbody>
-    ${st.map(({ s, p, r }) => `<tr><td class="l"><a href="#jugador.${p.id}">${esc(p.name)}</a></td><td>${s.goals || '·'}</td><td>${s.assists || '·'}</td><td>${'<i class="cardy"></i> '.repeat(s.yellow)}${'<i class="cardr"></i> '.repeat(s.red)}${s.yellow + s.red ? '' : '·'}</td><td>${r?.avg_score != null ? (+r.avg_score).toFixed(1) : '·'}</td><td>${r?.mvp_votes || '·'}</td></tr>`).join('')}</tbody></table></div>`;
+  if (st.length) h += `<div class="card scroll"><table><thead><tr><th class="l">Jugador</th><th>Goles</th><th>Asist.</th><th>Tarj.</th><th>Nota${m.voting_open ? '*' : ''}</th><th>MVP${m.voting_open ? '*' : ''}</th></tr></thead><tbody>
+    ${st.map(({ s, p, r }) => `<tr><td class="l"><a href="#jugador.${p.id}">${esc(p.name)}</a></td><td>${s.goals || '·'}</td><td>${s.assists || '·'}</td><td>${'<i class="cardy"></i> '.repeat(s.yellow)}${'<i class="cardr"></i> '.repeat(s.red)}${s.yellow + s.red ? '' : '·'}</td><td>${r?.avg_score != null ? (+r.avg_score).toFixed(1) : '·'}</td><td>${r?.mvp_votes || '·'}</td></tr>`).join('')}</tbody></table>${m.voting_open ? '<p class="small muted" style="margin:6px 0 0">* En directo: puede cambiar hasta que se cierre la votación.</p>' : ''}</div>`;
   else if (ours(m) && played(m)) h += empty('Aún no se han cargado las estadísticas de este partido.');
   return h;
 };
@@ -242,7 +257,7 @@ V.partido = id => {
 V.plantilla = () => {
   const all = S.players.filter(p => p.active).sort(byName);
   const grid = l => `<div class="squad">${l.map(p => `<a href="#jugador.${p.id}">${avatar(p, 76)}<span>${esc(p.name)}${p.number != null ? ` <span class="muted num">${p.number}</span>` : ''}</span></a>`).join('')}</div>`;
-  const groups = [['Portero', 'Porteros'], ['Defensa', 'Defensas'], ['Centrocampista', 'Centrocampistas'], ['Delantero', 'Delanteros'], ['', 'Sin posición'], ['Entrenador', 'Cuerpo técnico'], ['Leyenda', 'Leyendas']];
+  const groups = [['Portero', 'Porteros'], ['Defensa', 'Defensas'], ['Centrocampista', 'Centrocampistas'], ['Delantero', 'Delanteros'], ['', 'Sin posición'], ['Entrenador', 'Cuerpo técnico'], ['Leyenda', 'Leyendas'], ['Aficionado', 'Aficionados']];
   const known = new Set(groups.map(g => g[0]));
   return `<h1>Plantilla</h1>${all.length ? groups.map(([k, title]) => { const l = all.filter(p => (known.has(p.position || '') ? p.position || '' : '') === k); return l.length ? `<h2>${title} <span class="muted num">${l.length}</span></h2>${grid(l)}` : ''; }).join('') : empty('Todavía no hay jugadores.')}`;
 };
@@ -257,7 +272,7 @@ V.jugador = id => {
     ${isCoach(p) && !t.pj ? '' : `<div class="tiles">${[['Partidos', t.pj], ['Goles', t.goals], ['Asist.', t.assists], ['MVP', t.mvp], ['Nota', t.avg != null ? t.avg.toFixed(1) : '–'], ['Amarillas', t.yellow], ['Rojas', t.red]].map(([l, v]) => `<div class="tile"><b class="num">${v}</b><span>${l}</span></div>`).join('')}</div>
     <div class="card"><h2>Partidos jugados</h2>${log.length ? `<div class="list">${log.map(({ s, m }) => { const r = S.results.find(r => r.match_id === m.id && r.player_id === id);
       return `<a href="#partido.${m.id}"><span class="grow"><b>${esc(isUs(m.home) ? m.away : m.home)}</b> <span class="muted num">${played(m) ? `${m.home_goals}-${m.away_goals}` : ''}</span><div class="small muted">${esc(fmtDate(m.date))}</div></span>
-      <span class="small num">${[s.goals ? s.goals + ' gol' + (s.goals > 1 ? 'es' : '') : '', s.assists ? s.assists + ' asist.' : ''].filter(Boolean).join(' · ')}</span>${mvpOf(m.id) === id ? '<span class="pill neon">MVP</span>' : ''}${r?.avg_score != null ? `<span class="pill num">${(+r.avg_score).toFixed(1)}</span>` : ''}</a>`; }).join('')}</div>` : '<p class="muted" style="margin:0">Todavía no ha jugado ningún partido.</p>'}</div>`}`;
+      <span class="small num">${[s.goals ? s.goals + ' gol' + (s.goals > 1 ? 'es' : '') : '', s.assists ? s.assists + ' asist.' : ''].filter(Boolean).join(' · ')}</span>${mvpOf(m.id) === id ? '<span class="pill neon">MVP</span>' : ''}${r?.avg_score != null && !isOpen(m.id) ? `<span class="pill num">${(+r.avg_score).toFixed(1)}</span>` : ''}</a>`; }).join('')}</div>` : '<p class="muted" style="margin:0">Todavía no ha jugado ningún partido.</p>'}</div>`}`;
 };
 
 const METRICS = { goals: ['Goleadores', t => t.goals], assists: ['Asistentes', t => t.assists], most: ['Más partidos', t => t.pj], least: ['Menos partidos', t => t.pj], mvp: ['MVP', t => t.mvp], avg: ['Nota media', t => t.avg], cards: ['Tarjetas', t => t.yellow + t.red * 2] };
@@ -283,7 +298,7 @@ V.cuotas = () => {
     h += `<div class="hero"><span class="eyebrow">${esc(player(me.id).name)}</span><h2>${owe > 0 ? 'Te quedan ' + eur(owe) + ' por pagar' : fees.length ? 'Estás al día' : 'No hay cuotas'}</h2></div>`; }
   if (!fees.length) h += empty(adminPw ? 'Todavía no hay cuotas. Crea la primera con "Añadir cuota".' : 'Todavía no hay cuotas.');
   for (const f of fees) {
-    const ps = S.players.filter(p => (p.active && p.position !== 'Leyenda') || paid(f, p.id)).sort(byName), tot = ps.reduce((s, p) => s + Math.min(paid(f, p.id), f.amount), 0), done = ps.filter(p => paid(f, p.id) >= f.amount).length;
+    const ps = S.players.filter(p => (p.active && !NOFEE.includes(p.position)) || paid(f, p.id)).sort(byName), tot = ps.reduce((s, p) => s + Math.min(paid(f, p.id), f.amount), 0), done = ps.filter(p => paid(f, p.id) >= f.amount).length;
     h += `<div class="card"><div class="row between"><div class="grow"><h2>${esc(f.name)}</h2><div class="muted small">${eur(f.amount)} por jugador${f.due ? ' · hasta el ' + esc(fmtDate(f.due)) : ''}</div></div>
       ${adminPw ? `<button class="btn sm ghost" data-act="editfee" data-id="${f.id}">Editar</button>` : ''}</div>
       <div><b>${done} de ${ps.length}</b> han pagado · ${eur(tot)} de ${eur(f.amount * ps.length)}<div class="bar"><i style="width:${ps.length && f.amount ? tot / (f.amount * ps.length) * 100 : 0}%"></i></div></div>
@@ -310,7 +325,7 @@ V.admin = () => {
 };
 
 /* ---------- Acciones ---------- */
-const POS = [['', 'Sin posición'], ['Portero', 'Portero'], ['Defensa', 'Defensa'], ['Centrocampista', 'Centrocampista'], ['Delantero', 'Delantero'], ['Entrenador', 'Entrenador (cuerpo técnico)'], ['Leyenda', 'Leyenda (solo vota)']];
+const POS = [['', 'Sin posición'], ['Portero', 'Portero'], ['Defensa', 'Defensa'], ['Centrocampista', 'Centrocampista'], ['Delantero', 'Delantero'], ['Entrenador', 'Entrenador (cuerpo técnico)'], ['Leyenda', 'Leyenda (solo vota)'], ['Aficionado', 'Aficionado (solo vota)']];
 const A = {
   close: () => dlg.close(),
   setcomp: d => { ui.comp = d.id; render(); },
@@ -413,6 +428,7 @@ const A = {
     });
   },
   identify: d => A.vote({ ...d, only: 1 }),
+  resetvote: d => formDlg('¿Anular el voto de ' + (player(d.pid)?.name || '') + '?', '<p style="margin:0">Se borran su nota a cada jugador y su voto al MVP, y podrá volver a votar.</p>', async () => { await arpc('admin_reset_vote', { mid: d.id, pid: d.pid }); await refresh(); toast('Voto anulado'); }, 'Anular voto'),
   session: () => {
     const p = me && player(me.id);
     formDlg('Sesión', `<div class="row between"><span class="grow">${p ? `Jugador: <b>${esc(p.name)}</b>` : 'No te has identificado como jugador.'}</span><button type="button" class="btn sm ${p ? 'danger' : ''}" data-act="${p ? 'forgetme' : 'identify'}">${p ? 'Cerrar sesión' : 'Identificarme'}</button></div>
@@ -428,7 +444,11 @@ const A = {
   editatt: d => {
     const ps = S.players.filter(p => p.active && !isCoach(p)).sort(byName);
     formDlg('Convocatoria', ps.map(p => `<div class="row between"><label for="f_at_${p.id}">${esc(p.name)}</label><select id="f_at_${p.id}" name="at_${p.id}" style="width:auto">${[['', 'Sin responder'], ...Object.entries(ATT)].map(([v, t]) => `<option value="${v}"${(attOf(d.id, p.id) || '') === v ? ' selected' : ''}>${t}</option>`).join('')}</select></div>`).join(''), async f => {
-      for (const p of ps) if ((attOf(d.id, p.id) || '') !== f['at_' + p.id]) await api.rpc('set_attendance', { pid: p.id, secret: adminPw, mid: d.id, st: f['at_' + p.id] || null });
+      for (const p of ps) if ((attOf(d.id, p.id) || '') !== f['at_' + p.id]) {
+        const st = f['at_' + p.id] || null;
+        if (adminPw) await api.rpc('set_attendance', { pid: p.id, secret: adminPw, mid: d.id, st });
+        else await api.rpc('coach_set_attendance', { coach: me.id, pin: me.pin, mid: d.id, pid: p.id, st });
+      }
       await refresh();
     });
   },
@@ -450,8 +470,9 @@ const A = {
         me = { id: f.pid, pin: f.pin }; ls.set('odp-me', me); FEES = null; feesErr = ''; if (d.after) setTimeout(d.after); else if (d.only) render(); else setTimeout(() => A.vote(d));
       }, 'Continuar');
     }
+    if (S.voters.some(v => v.match_id === d.id && v.voter_id === me.id)) { render(); return toast('Ya has votado en este partido'); }
     const ps = S.stats.filter(s => s.match_id === d.id).map(s => player(s.player_id)).filter(p => p && p.id !== me.id).sort(byName);
-    formDlg('Puntúa a tus compañeros', `<p class="small muted" style="margin:0">Votas como <b>${esc(player(me.id).name)}</b>. Nota del 1 al 10 para cada uno y un MVP. Puedes cambiar tu voto mientras la votación siga abierta.</p>
+    formDlg('Puntúa a tus compañeros', `<p class="small muted" style="margin:0">Votas como <b>${esc(player(me.id).name)}</b>. Nota del 1 al 10 para cada uno y un MVP. Revisa antes de enviar: una vez enviado no se puede cambiar.</p>
       ${ps.map(p => `<div class="vote"><div class="row between"><span class="row">${avatar(p, 32)}<b>${esc(p.name)}</b></span><label class="mvpl"><input type="radio" id="mvp_${p.id}" name="mvp" value="${p.id}" required> MVP</label></div>
       <div class="scores">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<label><input type="radio" id="s_${p.id}_${n}" name="s_${p.id}" value="${n}" required aria-label="${n}"><span>${n}</span></label>`).join('')}</div></div>`).join('')}`, async f => {
       const scores = Object.fromEntries(ps.map(p => [p.id, +f['s_' + p.id]]));
