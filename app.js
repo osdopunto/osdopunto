@@ -266,7 +266,7 @@ V.jugador = id => {
   const p = player(id); if (!p) return empty('Jugador no encontrado.');
   const t = totals().find(x => x.p.id === id) || { pj: 0, goals: 0, assists: 0, yellow: 0, red: 0, mvp: 0, avg: null };
   const log = S.stats.filter(s => s.player_id === id).map(s => ({ s, m: S.matches.find(m => m.id === s.match_id) })).filter(x => x.m).sort((a, b) => byDate(b.m, a.m));
-  return `<a class="small muted" href="#plantilla">‹ Plantilla</a><div class="row">${avatar(p, 104)}<div class="grow"><h1>${esc(p.name)}</h1>
+  return `<a class="small muted" href="#plantilla">‹ Plantilla</a><div class="row">${PH[id] ? `<button class="avbtn" data-act="bigphoto" data-id="${id}" aria-label="Ver foto en grande">${avatar(p, 104)}</button>` : avatar(p, 104)}<div class="grow"><h1>${esc(p.name)}</h1>
     <div class="muted">${[p.number != null ? 'Dorsal ' + p.number : '', p.position].filter(Boolean).map(esc).join(' · ') || 'Jugador'}</div>
     <button class="btn sm ghost" style="margin-top:8px" data-act="photo" data-id="${id}">${PH[id] ? 'Cambiar foto' : 'Poner foto'}</button></div></div>
     ${isCoach(p) && !t.pj ? '' : `<div class="tiles">${[['Partidos', t.pj], ['Goles', t.goals], ['Asist.', t.assists], ['MVP', t.mvp], ['Nota', t.avg != null ? t.avg.toFixed(1) : '–'], ['Amarillas', t.yellow], ['Rojas', t.red]].map(([l, v]) => `<div class="tile"><b class="num">${v}</b><span>${l}</span></div>`).join('')}</div>
@@ -418,14 +418,22 @@ const A = {
     const p = player(d.id), needPin = !adminPw && !(me && me.id === p.id);
     formDlg('Foto de ' + p.name, `<label class="f">Hacer una foto con la cámara<input type="file" id="f_cam" name="cam" accept="image/*" capture="user"></label>
       <label class="f">O elegir una de la galería<input type="file" id="f_file" name="file" accept="image/*"></label>
+      <div id="cropwrap" class="fields" hidden><div class="crop" id="crop"><img id="cropimg" alt="Foto para encuadrar"></div>
+      <label class="f">Zoom<input type="range" id="f_zoom" min="1" max="4" step="0.01" value="1"></label>
+      <p class="small muted" style="margin:0">Arrastra la foto con el dedo para encuadrarla y usa el zoom para acercarla. El círculo es lo que se verá en el perfil.</p></div>
       ${needPin ? fld('PIN de ' + p.name, 'pin', '', 'type="password" inputmode="numeric" required minlength="4" autocomplete="off"') + '<p class="small muted" style="margin:0">Solo cada jugador puede cambiar su foto. Si es tu primera vez, el PIN que escribas quedará como tuyo.</p>' : ''}`, async (f, form) => {
-      const file = $('#f_cam', form).files[0] || $('#f_file', form).files[0];
-      if (!file) throw new Error('Haz una foto o elige una de la galería');
+      if (!crop.ready()) throw new Error('Haz una foto o elige una de la galería');
       let secret = adminPw || me?.pin;
       if (needPin) { if (!await api.rpc('pin_login', { pid: p.id, pin: f.pin })) throw new Error('PIN incorrecto'); me = { id: p.id, pin: f.pin }; ls.set('odp-me', me); secret = f.pin; }
-      const data = await fileToPhoto(file);
+      const data = crop.export();
       await api.rpc('set_photo', { pid: p.id, secret, data }); await refresh(true); toast('Foto guardada');
     });
+    const crop = setupCrop($('#dlgform'));
+  },
+  bigphoto: d => {
+    const p = player(d.id); if (!PH[d.id]) return;
+    dlg.innerHTML = `<div class="bigph"><img src="${PH[d.id]}" alt="Foto de ${esc(p.name)}"><div class="row between"><h2>${esc(p.name)}</h2><button class="btn ghost" data-act="close">Cerrar</button></div></div>`;
+    dlg.showModal();
   },
   identify: d => A.vote({ ...d, only: 1 }),
   resetvote: d => formDlg('¿Anular el voto de ' + (player(d.pid)?.name || '') + '?', '<p style="margin:0">Se borran su nota a cada jugador y su voto al MVP, y podrá volver a votar.</p>', async () => { await arpc('admin_reset_vote', { mid: d.id, pid: d.pid }); await refresh(); toast('Voto anulado'); }, 'Anular voto'),
@@ -482,6 +490,40 @@ const A = {
     }, 'Enviar voto');
   }
 };
+function setupCrop(form) {
+  const box = $('#crop', form), img = $('#cropimg', form), zoom = $('#f_zoom', form), C = { ok: false, x: 0, y: 0, z: 1, base: 1 };
+  const B = () => box.clientWidth;
+  const draw = () => {
+    const s = C.base * C.z, w = img.naturalWidth * s, h = img.naturalHeight * s;
+    C.x = Math.min(0, Math.max(B() - w, C.x)); C.y = Math.min(0, Math.max(B() - h, C.y));
+    img.style.width = w + 'px'; img.style.height = h + 'px'; img.style.transform = `translate(${C.x}px, ${C.y}px)`;
+  };
+  const setZoom = z => { const old = C.base * C.z; C.z = Math.min(4, Math.max(1, z)); const s = C.base * C.z, c = B() / 2;
+    C.x = c - (c - C.x) / old * s; C.y = c - (c - C.y) / old * s; zoom.value = C.z; draw(); };
+  const load = file => {
+    if (!file) return; const url = URL.createObjectURL(file);
+    img.onload = () => { $('#cropwrap', form).hidden = false; C.base = B() / Math.min(img.naturalWidth, img.naturalHeight); C.z = 1; zoom.value = 1;
+      C.x = (B() - img.naturalWidth * C.base) / 2; C.y = (B() - img.naturalHeight * C.base) / 2; C.ok = true; draw(); };
+    img.onerror = () => toast('No se pudo leer la imagen'); img.src = url;
+  };
+  for (const id of ['#f_cam', '#f_file']) $(id, form).addEventListener('change', e => { if (e.target.files[0]) { load(e.target.files[0]); (id === '#f_cam' ? $('#f_file', form) : $('#f_cam', form)).value = ''; } });
+  zoom.addEventListener('input', () => setZoom(+zoom.value));
+  const pts = new Map(); let last = null, pinch = null;
+  box.addEventListener('pointerdown', e => { if (!C.ok) return; box.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); last = [e.clientX, e.clientY]; pinch = null; });
+  box.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pts.size === 2) { const [a, b] = [...pts.values()], dist = Math.hypot(a[0] - b[0], a[1] - b[1]); if (pinch) setZoom(C.z * dist / pinch); pinch = dist; return; }
+    C.x += e.clientX - last[0]; C.y += e.clientY - last[1]; last = [e.clientX, e.clientY]; draw();
+  });
+  const up = e => { pts.delete(e.pointerId); pinch = null; const r = [...pts.values()][0]; if (r) last = r; };
+  box.addEventListener('pointerup', up); box.addEventListener('pointercancel', up);
+  box.addEventListener('wheel', e => { if (!C.ok) return; e.preventDefault(); setZoom(C.z * (e.deltaY < 0 ? 1.08 : 1 / 1.08)); }, { passive: false });
+  return {
+    ready: () => C.ok,
+    export() { const s = C.base * C.z, n = 512, c = document.createElement('canvas'); c.width = c.height = n;
+      c.getContext('2d').drawImage(img, -C.x / s, -C.y / s, B() / s, B() / s, 0, 0, n, n); return c.toDataURL('image/jpeg', .85); }
+  };
+}
 function fileToPhoto(file) {
   return new Promise((res, rej) => {
     const img = new Image(), url = URL.createObjectURL(file);
@@ -495,6 +537,7 @@ document.addEventListener('click', async e => {
   if (b.tagName !== 'A') e.preventDefault();
   try { await A[b.dataset.act](b.dataset); } catch (err) { toast(err.message || 'Algo ha fallado'); }
 });
+dlg.addEventListener('click', e => { if (e.target === dlg && $('.bigph', dlg)) dlg.close(); });
 document.addEventListener('change', e => { if (e.target.dataset.chg === 'onlyus') { ui.onlyUs = e.target.checked; render(); } });
 
 /* ---------- Navegación ---------- */
