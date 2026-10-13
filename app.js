@@ -19,7 +19,8 @@ function remoteBackend() {
   return {
     async load() {
       const [players, comps, matches, stats, results, voters, att] = await Promise.all(['players', 'competitions', 'matches', 'player_stats', 'match_results', 'match_voters', 'attendance'].map(all));
-      return { players, comps, matches, stats, results, voters, att };
+      const cm = await sb.from('comments').select('*').order('created_at'); // si aún no existe la tabla, la app sigue funcionando
+      return { players, comps, matches, stats, results, voters, att, comments: cm.error ? [] : cm.data };
     },
     async photos() { return Object.fromEntries((await all('player_photos')).map(r => [r.player_id, r.data])); },
     async rpc(fn, args) { const { data, error } = await sb.rpc(fn, args); if (error) throw new Error(error.message); return data; }
@@ -27,7 +28,7 @@ function remoteBackend() {
 }
 function localBackend() {
   const d = ls.get('odp-demo2') || { players: [], competitions: [], matches: [], player_stats: [], photos: {}, pins: {}, ratings: [], mvp: [], admin: 'admin' };
-  d.fees ||= []; d.fee_payments ||= []; d.attendance ||= [];
+  d.fees ||= []; d.fee_payments ||= []; d.attendance ||= []; d.comments ||= [];
   const adm = pw => { if (pw !== d.admin) throw new Error('Contraseña incorrecta'); };
   const fns = {
     admin_check: ({ pw }) => pw === d.admin,
@@ -40,6 +41,7 @@ function localBackend() {
       d.ratings = d.ratings.filter(s => ms.has(s.match_id) && ps.has(s.player_id) && ps.has(s.voter_id));
       d.mvp = d.mvp.filter(s => ms.has(s.match_id) && ps.has(s.player_id) && ps.has(s.voter_id));
       d.attendance = d.attendance.filter(s => ms.has(s.match_id) && ps.has(s.player_id));
+      d.comments = d.comments.filter(s => ms.has(s.match_id) && ps.has(s.player_id));
       const fs = new Set(d.fees.map(f => f.id)); d.fee_payments = d.fee_payments.filter(x => fs.has(x.fee_id) && ps.has(x.player_id));
     },
     admin_set_stats({ pw, mid, rows }) { adm(pw); d.player_stats = d.player_stats.filter(s => s.match_id !== mid).concat(rows.map(r => ({ ...r, match_id: mid }))); },
@@ -52,6 +54,8 @@ function localBackend() {
     set_photo({ pid, secret, data }) { if (secret !== d.admin && d.pins[pid] !== secret) throw new Error('PIN incorrecto'); if (data) d.photos[pid] = data; else delete d.photos[pid]; },
     admin_reset_vote({ pw, mid, pid }) { adm(pw); d.ratings = d.ratings.filter(r => !(r.match_id === mid && r.voter_id === pid)); d.mvp = d.mvp.filter(r => !(r.match_id === mid && r.voter_id === pid)); },
     coach_set_attendance({ coach, pin, mid, pid, st }) { if (d.pins[coach] !== pin || d.players.find(p => p.id === coach)?.position !== 'Entrenador') throw new Error('Solo los entrenadores pueden editar la convocatoria'); d.attendance = d.attendance.filter(x => !(x.match_id === mid && x.player_id === pid)); if (st) d.attendance.push({ match_id: mid, player_id: pid, status: st }); },
+    add_comment({ pid, pin, mid, body }) { if (d.pins[pid] !== pin) throw new Error('PIN incorrecto'); body = (body || '').trim(); if (!body) throw new Error('Escribe algo antes de enviar'); if (body.length > 1000) throw new Error('Máximo 1000 caracteres'); d.comments.push({ id: uid(), match_id: mid, player_id: pid, body, created_at: new Date().toISOString() }); },
+    delete_comment({ pid, secret, cid }) { const c = d.comments.find(x => x.id === cid); if (!c) return; if (secret !== d.admin && !(c.player_id === pid && d.pins[pid] === secret)) throw new Error('Solo el autor o un administrador pueden borrarlo'); d.comments = d.comments.filter(x => x.id !== cid); },
     cast_vote({ pid, pin, mid, mvp, scores }) {
       if (d.pins[pid] !== pin) throw new Error('PIN incorrecto');
       if (!d.matches.find(m => m.id === mid && m.voting_open)) throw new Error('La votación está cerrada');
@@ -67,7 +71,7 @@ function localBackend() {
         const rs = d.ratings.filter(r => r.match_id === s.match_id && r.player_id === s.player_id);
         return { match_id: s.match_id, player_id: s.player_id, avg_score: rs.length ? rs.reduce((a, r) => a + r.score, 0) / rs.length : null, mvp_votes: d.mvp.filter(v => v.match_id === s.match_id && v.player_id === s.player_id).length };
       });
-      return JSON.parse(JSON.stringify({ players: d.players, comps: d.competitions, matches: d.matches, stats: d.player_stats, results, voters: d.mvp.map(v => ({ match_id: v.match_id, voter_id: v.voter_id })), att: d.attendance }));
+      return JSON.parse(JSON.stringify({ players: d.players, comps: d.competitions, matches: d.matches, stats: d.player_stats, results, voters: d.mvp.map(v => ({ match_id: v.match_id, voter_id: v.voter_id })), att: d.attendance, comments: d.comments }));
     },
     async photos() { return { ...d.photos }; },
     async rpc(fn, args) { const r = fns[fn](args); ls.set('odp-demo2', d); return r; }
@@ -76,7 +80,7 @@ function localBackend() {
 const api = DEMO ? localBackend() : remoteBackend();
 
 /* ---------- Estado ---------- */
-let S = { players: [], comps: [], matches: [], stats: [], results: [], voters: [], att: [] }, PH = {};
+let S = { players: [], comps: [], matches: [], stats: [], results: [], voters: [], att: [], comments: [] }, PH = {};
 let adminPw = null; try { adminPw = sessionStorage.getItem('odp-admin'); } catch {}
 let me = ls.get('odp-me'), FEES = null, feesErr = '';
 const eur = n => (+n || 0).toLocaleString('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 });
@@ -251,6 +255,14 @@ V.partido = id => {
   if (st.length) h += `<div class="card scroll"><table><thead><tr><th class="l">Jugador</th><th>Goles</th><th>Asist.</th><th>Tarj.</th><th>Nota${m.voting_open ? '*' : ''}</th><th>MVP${m.voting_open ? '*' : ''}</th></tr></thead><tbody>
     ${st.map(({ s, p, r }) => `<tr><td class="l"><a href="#jugador.${p.id}">${esc(p.name)}</a></td><td>${s.goals || '·'}</td><td>${s.assists || '·'}</td><td>${'<i class="cardy"></i> '.repeat(s.yellow)}${'<i class="cardr"></i> '.repeat(s.red)}${s.yellow + s.red ? '' : '·'}</td><td>${r?.avg_score != null ? (+r.avg_score).toFixed(1) : '·'}</td><td>${r?.mvp_votes || '·'}</td></tr>`).join('')}</tbody></table>${m.voting_open ? '<p class="small muted" style="margin:6px 0 0">* En directo: puede cambiar hasta que se cierre la votación.</p>' : ''}</div>`;
   else if (ours(m) && played(m)) h += empty('Aún no se han cargado las estadísticas de este partido.');
+  if (ours(m)) {
+    const cs = (S.comments || []).filter(c => c.match_id === id).sort((a, b) => a.created_at.localeCompare(b.created_at)), mp = me && player(me.id);
+    const when = t => new Date(t).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    h += `<div class="card"><h2>Comentarios${cs.length ? ` <span class="muted num">${cs.length}</span>` : ''}</h2>
+      ${cs.length ? `<div class="list cmts">${cs.map(c => { const p = player(c.player_id); return `<div>${avatar(p, 36)}<div class="grow"><div class="row between"><b>${esc(p?.name || 'Antiguo miembro')}</b><span class="small muted">${when(c.created_at)}${(adminPw || (mp && mp.id === c.player_id)) ? ` <button class="xbtn" data-act="delcomment" data-id="${c.id}" aria-label="Borrar comentario">×</button>` : ''}</span></div><p class="cbody">${esc(c.body)}</p></div></div>`; }).join('')}</div>` : '<p class="muted" style="margin:0">Todavía no hay comentarios. ¡Estrena tú la conversación!</p>'}
+      <form id="cform" data-mid="${id}" class="fields"><label class="f">${mp ? `Comentas como ${esc(mp.name)}` : 'Tu comentario'}<textarea id="f_comment" name="body" rows="3" maxlength="1000" required placeholder="¿Qué te pareció el partido?"></textarea></label>
+      <div class="row end"><button class="btn">Enviar comentario</button></div></form></div>`;
+  }
   return h;
 };
 
@@ -436,6 +448,13 @@ const A = {
     dlg.showModal();
   },
   identify: d => A.vote({ ...d, only: 1 }),
+  comment: async (mid, body) => {
+    if (!me || !player(me.id)) return A.vote({ only: 1, after: () => A.comment(mid, body) });
+    try { await api.rpc('add_comment', { pid: me.id, pin: me.pin, mid, body }); }
+    catch (e) { if (/PIN/.test(e.message)) { me = null; ls.del('odp-me'); } throw e; }
+    await refresh(); toast('Comentario publicado');
+  },
+  delcomment: d => formDlg('¿Borrar este comentario?', '<p style="margin:0">No se puede deshacer.</p>', async () => { await api.rpc('delete_comment', { pid: me?.id || null, secret: adminPw || me?.pin || '', cid: d.id }); await refresh(); }, 'Borrar'),
   resetvote: d => formDlg('¿Anular el voto de ' + (player(d.pid)?.name || '') + '?', '<p style="margin:0">Se borran su nota a cada jugador y su voto al MVP, y podrá volver a votar.</p>', async () => { await arpc('admin_reset_vote', { mid: d.id, pid: d.pid }); await refresh(); toast('Voto anulado'); }, 'Anular voto'),
   session: () => {
     const p = me && player(me.id);
@@ -536,6 +555,11 @@ document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]'); if (!b || !A[b.dataset.act]) return;
   if (b.tagName !== 'A') e.preventDefault();
   try { await A[b.dataset.act](b.dataset); } catch (err) { toast(err.message || 'Algo ha fallado'); }
+});
+document.addEventListener('submit', async e => {
+  if (e.target.id !== 'cform') return; e.preventDefault();
+  const body = e.target.body.value.trim(); if (!body) return toast('Escribe algo antes de enviar');
+  try { await A.comment(e.target.dataset.mid, body); } catch (err) { toast(err.message || 'Algo ha fallado'); }
 });
 dlg.addEventListener('click', e => { if (e.target === dlg && $('.bigph', dlg)) dlg.close(); });
 document.addEventListener('change', e => { if (e.target.dataset.chg === 'onlyus') { ui.onlyUs = e.target.checked; render(); } });

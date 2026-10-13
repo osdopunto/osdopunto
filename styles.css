@@ -93,3 +93,5 @@ input[type=checkbox],input[type=radio]{width:20px;height:20px;accent-color:var(-
 .crop::after{content:'';position:absolute;inset:0;border-radius:50%;box-shadow:0 0 0 999px #0009;pointer-events:none}
 .avbtn{border:0;padding:0;background:none;border-radius:50%;cursor:zoom-in}
 .bigph{display:flex;flex-direction:column;gap:12px} .bigph img{width:100%;max-height:70dvh;object-fit:contain;border-radius:12px;display:block}
+.cmts>*{align-items:flex-start} .cbody{margin:2px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.xbtn{border:0;background:none;color:var(--muted);font-size:1.2rem;line-height:1;cursor:pointer;padding:0 4px}
