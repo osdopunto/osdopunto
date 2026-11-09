@@ -157,6 +157,8 @@ const V = {};
 const fixture = m => `<a href="#partido.${m.id}"><span class="fx"><span>${isUs(m.home) ? `<b>${esc(m.home)}</b>` : esc(m.home)}</span>
   ${played(m) ? `<span class="sc num">${m.home_goals} - ${m.away_goals}</span>` : `<span class="sc t">${m.date ? esc(m.date.slice(8, 10) + '/' + m.date.slice(5, 7)) : 'vs'}</span>`}
   <span>${isUs(m.away) ? `<b>${esc(m.away)}</b>` : esc(m.away)}</span></span></a>`;
+const mapsUrl = m => { const l = (m?.location || '').trim(); if (!l) return ''; return /^https?:\/\//i.test(l) ? l : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(l); };
+const wayCard = m => mapsUrl(m) ? `<div class="card"><div class="row between"><div class="grow"><span class="eyebrow">Campo</span><div><b>${esc(m.venue || 'Ubicación del partido')}</b></div>${/^https?:/i.test(m.location) ? '' : `<div class="small muted">${esc(m.location)}</div>`}</div><a class="btn" href="${esc(mapsUrl(m))}" target="_blank" rel="noopener">Cómo llegar</a></div></div>` : '';
 const meta = m => `${esc(comp(m.competition_id)?.friendly ? 'Amistoso' : comp(m.competition_id)?.name || '')}${m.round ? ` · Jornada ${m.round}` : ''}`;
 
 V.inicio = () => {
@@ -171,6 +173,7 @@ V.inicio = () => {
     h += `<a class="hero" href="#partido.${next.id}"><span class="eyebrow">Próximo partido · ${meta(next)}</span>
       <div class="versus"><span>${esc(next.home)}</span><span class="mid">VS</span><span>${esc(next.away)}</span></div>
       <div class="heromet"><span>${esc(fmtDate(next.date, true))}</span>${next.venue ? `<span>${esc(next.venue)}</span>` : ''}${days != null ? `<span><b>${days === 0 ? 'Hoy' : days === 1 ? 'Mañana' : `Faltan ${days} días`}</b></span>` : ''}</div></a>`;
+    h += wayCard(next);
     const rest = S.matches.filter(m => m.competition_id === next.competition_id && !played(m) && m.date && next.date && m.date.slice(0, 10) >= today && m.date < next.date).sort(byDate)[0];
     if (rest) h += `<p class="small muted" style="margin:0">Jornada ${rest.round} (${esc(fmtDate(rest.date))}): ${esc(CFG.team)} descansa.</p>`;
   } else h += `<div class="hero"><span class="eyebrow">Próximo partido</span><h2>Sin partidos programados</h2><span class="heromet">Añade el calendario desde Administración (icono de arriba a la derecha).</span></div>`;
@@ -191,8 +194,18 @@ V.inicio = () => {
       <div class="tile"><b class="num">${i + 1}º</b><span>Posición</span></div><div class="tile"><b class="num">${r.pts}</b><span>Puntos</span></div>
       <div class="tile"><b class="num">${r.pj}</b><span>Jugados</span></div><div class="tile"><b class="num">${r.gf}-${r.gc}</b><span>Goles</span></div></div></a>`; }
   }
-  const top = totals().filter(t => t.goals).sort((a, b) => b.goals - a.goals).slice(0, 3);
-  if (top.length) h += `<div class="card"><div class="row between"><h2>Goleadores</h2><a class="small muted" href="#estadisticas">Ver todo</a></div><div class="list rank">${top.map((t, i) => rankRow(t, i, t.goals, top[0].goals)).join('')}</div></div>`;
+  // Rankings de la pestaña de inicio: solo partidos de liga (sin amistosos)
+  if (c) {
+    const T = totals(c.id), board = (title, metric, rows, val, max) => `<div class="card"><div class="row between"><h2>${title}</h2><a class="small muted" href="#estadisticas" data-act="homestats" data-id="${c.id}" data-metric="${metric}">Ver todo</a></div>
+      ${rows.length ? `<div class="list rank">${rows.map((t, i) => rankRow(t, i, val(t), max)).join('')}</div>` : '<p class="muted" style="margin:0">Aparecerá cuando se jueguen partidos de liga.</p>'}</div>`;
+    const gol = T.filter(t => t.goals).sort((a, b) => b.goals - a.goals || byName(a.p, b.p)).slice(0, 3);
+    const mvp = T.filter(t => t.mvp).sort((a, b) => b.mvp - a.mvp || (b.avg || 0) - (a.avg || 0) || byName(a.p, b.p)).slice(0, 3);
+    const nota = T.filter(t => t.avg != null).sort((a, b) => b.avg - a.avg || b.n - a.n || byName(a.p, b.p)).slice(0, 3);
+    h += `<div class="eyebrow">Rankings · ${esc(c.name)}</div>`;
+    h += board('Goleadores', 'goals', gol, t => t.goals, gol[0]?.goals);
+    h += board('Más MVP', 'mvp', mvp, t => t.mvp, mvp[0]?.mvp);
+    h += board('Mejor nota media', 'avg', nota, t => t.avg.toFixed(1), 10);
+  }
   return h;
 };
 const POSG = [['Portero', 'Porteros'], ['Defensa', 'Defensas'], ['Centrocampista', 'Centrocampistas'], ['Delantero', 'Delanteros'], ['', 'Sin posición']];
@@ -229,6 +242,7 @@ V.partido = id => {
   let h = `<a class="small muted" href="#partidos">‹ Calendario</a><div class="hero"><div class="row between"><span class="eyebrow">${meta(m)}</span>${r ? `<span class="pill ${r}">${RES[r]}</span>` : ''}</div>
     <div class="versus"><span>${esc(m.home)}</span><span class="mid ${played(m) ? 'score num' : ''}">${played(m) ? `${m.home_goals} - ${m.away_goals}` : 'VS'}</span><span>${esc(m.away)}</span></div>
     <div class="heromet"><span>${esc(fmtDate(m.date, true))}</span>${m.venue ? `<span>${esc(m.venue)}</span>` : ''}</div></div>`;
+  if (!played(m)) h += wayCard(m);
   if (adminPw) h += `<div class="row"><button class="btn sm" data-act="editmatch" data-id="${id}">${played(m) ? 'Editar partido y resultado' : 'Poner resultado'}</button>
     ${ours(m) ? `<button class="btn sm" data-act="editstats" data-id="${id}">Estadísticas de jugadores</button><button class="btn sm ${m.voting_open ? 'ghost' : 'neon'}" data-act="togglevote" data-id="${id}">${m.voting_open ? 'Cerrar votación' : 'Abrir votación'}</button>` : ''}
     <button class="btn sm danger" data-act="delmatch" data-id="${id}">Eliminar</button></div>`;
@@ -343,6 +357,7 @@ const A = {
   setcomp: d => { ui.comp = d.id; render(); },
   statcomp: d => { ui.statComp = d.id; render(); },
   metric: d => { ui.metric = d.id; render(); },
+  homestats: d => { ui.statComp = d.id; ui.metric = d.metric; location.hash = '#estadisticas'; },
   login: () => formDlg('Administración', fld('Contraseña', 'pw', '', 'type="password" required autocomplete="current-password"'), async f => {
     if (!await api.rpc('admin_check', { pw: f.pw })) throw new Error('Contraseña incorrecta');
     adminPw = f.pw; try { sessionStorage.setItem('odp-admin', f.pw); } catch {} FEES = null; feesErr = ''; render();
@@ -383,15 +398,19 @@ const A = {
     const m = S.matches.find(x => x.id === d.id) || { id: uid(), competition_id: curComp()?.id || '__f', round: null, date: '', venue: '', home: '', away: '', home_goals: null, away_goals: null, voting_open: false };
     const teams = [...new Set(S.comps.flatMap(c => c.teams))].sort();
     formDlg(d.id ? 'Editar partido' : 'Nuevo partido', `${sel('Competición', 'competition_id', [...comps().map(c => [c.id, c.name]), ...(fr ? [] : [['__f', 'Amistoso']])], m.competition_id)}
-      <div class="two">${fld('Jornada', 'round', m.round ?? '', 'type="number" min="1"')}${fld('Fecha y hora', 'date', m.date || '', 'type="datetime-local"')}</div>${fld('Campo', 'venue', m.venue || '')}
+      <div class="two">${fld('Jornada', 'round', m.round ?? '', 'type="number" min="1"')}${fld('Fecha y hora', 'date', m.date ? (m.date.length === 10 ? m.date + 'T00:00' : m.date.slice(0, 16)) : '', 'type="datetime-local"')}</div>${fld('Campo', 'venue', m.venue || '', 'list="venues" placeholder="Nombre del campo"')}
+      <datalist id="venues">${[...new Set(S.matches.map(x => x.venue).filter(Boolean))].sort().map(v => `<option value="${esc(v)}">`).join('')}</datalist>
+      ${fld('Ubicación (enlace de Google Maps o dirección)', 'location', m.location || '', 'placeholder="https://maps.app.goo.gl/… o calle, número, ciudad"')}
+      <p class="small muted" style="margin:0">Para el enlace: en Google Maps busca el campo, pulsa "Compartir" y copia el enlace. Si eliges un campo que ya usaste, la ubicación se rellena sola.</p>
       <datalist id="teams">${teams.map(t => `<option value="${esc(t)}">`).join('')}</datalist>
       <div class="two">${fld('Local', 'home', m.home, 'required list="teams"')}${fld('Visitante', 'away', m.away, 'required list="teams"')}</div>
       <div class="two">${fld('Goles local', 'hg', m.home_goals ?? '', 'type="number" min="0"')}${fld('Goles visitante', 'ag', m.away_goals ?? '', 'type="number" min="0"')}</div>
       <p class="small muted" style="margin:0">Deja los goles vacíos si aún no se ha jugado.</p>`, async f => {
       if (f.competition_id === '__f') { f.competition_id = uid(); await arpc('admin_upsert', { tbl: 'competitions', rows: [{ id: f.competition_id, name: 'Amistosos', teams: [], sort: 99, friendly: true }] }); }
-      await arpc('admin_upsert', { tbl: 'matches', rows: [{ id: m.id, competition_id: f.competition_id, round: int(f.round), date: f.date || null, venue: f.venue.trim() || null, home: f.home.trim().toUpperCase(), away: f.away.trim().toUpperCase(), home_goals: int(f.hg), away_goals: int(f.ag), voting_open: m.voting_open }] });
+      await arpc('admin_upsert', { tbl: 'matches', rows: [{ id: m.id, competition_id: f.competition_id, round: int(f.round), date: f.date ? f.date.replace(/T00:00$/, '') : null, venue: f.venue.trim() || null, location: f.location.trim() || null, home: f.home.trim().toUpperCase(), away: f.away.trim().toUpperCase(), home_goals: int(f.hg), away_goals: int(f.ag), voting_open: m.voting_open }] });
       await refresh();
     });
+    $('#f_venue').addEventListener('change', e => { const loc = $('#f_location'), prev = S.matches.find(x => x.venue === e.target.value.trim() && x.location); if (prev && !loc.value.trim()) loc.value = prev.location; });
   },
   bulk: () => {
     if (!S.comps.length) return toast('Primero crea una competición');
